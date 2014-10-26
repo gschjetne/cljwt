@@ -19,14 +19,16 @@
 (in-package #:cl-user)
 (defpackage #:cljws
   (:use #:cl
-        #:cl-base64
-        :ironclad)
+        #:cl-base64)
   (:import-from #:alexandria
-                #:plist-hash-table
-                #:doplist)
+                #:plist-hash-table)
   (:import-from #:flexi-streams
                 #:string-to-octets
                 #:octets-to-string)
+  (:import-from #:ironclad
+                #:make-hmac
+                #:update-hmac
+                #:hmac-digest)
   (:export #:issue
            #:to-unix-time))
 
@@ -108,7 +110,7 @@ number of seconds from 1900-01-01 00:00:00"
               (when (eq algorithm :hs256)
                 (base64
                  (hmac-digest
-                  (update-hmac (make-hmac secret 'SHA256)
+                  (update-hmac (make-hmac secret 'ironclad:SHA256)
                                (concatenate '(vector (unsigned-byte 8))
                                             (string-to-octets
                                              header-string)
