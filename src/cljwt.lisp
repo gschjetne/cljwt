@@ -85,7 +85,7 @@ number of seconds from 1900-01-01 00:00:00"
     (add-claims header
                 "typ" "JWT"
                 "alg" (ecase algorithm
-                        (:plain "plain")
+                        (:none "none")
                         (:hs256 "HS256")))
     ;; Prepare JSON and, if applicable, key
     (let ((header-string (base64
@@ -94,7 +94,7 @@ number of seconds from 1900-01-01 00:00:00"
           (claims-string (base64
                           (with-output-to-string (s)
                             (yason:encode claimset s))))
-          (secret (unless (eq algorithm :plain)
+          (secret (unless (eq algorithm :none)
                     (etypecase secret
                       ((simple-array (unsigned-byte 8))
                        secret)
