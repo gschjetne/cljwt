@@ -5,10 +5,11 @@
 
 ** Implemented so far
    - Issue unsecured tokens
+   - HMAC security
 
 ** To do
-   - HMAC security
    - Parsing and validation
+   - Additional algorithms
 
 ** License
    This program is free software: you can redistribute it and/or modify

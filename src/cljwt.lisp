@@ -19,12 +19,14 @@
 (in-package #:cl-user)
 (defpackage #:cljws
   (:use #:cl
-        #:cl-base64)
+        #:cl-base64
+        :ironclad)
   (:import-from #:alexandria
                 #:plist-hash-table
                 #:doplist)
   (:import-from #:flexi-streams
-                #:string-to-octets)
+                #:string-to-octets
+                #:octets-to-string)
   (:export #:issue))
 
 (in-package #:cljws)
@@ -79,22 +81,34 @@ Necessary because CL-BASE64 has no option to omit padding."
 
     (add-claims header
                 "typ" "JWT"
-                "alg" "none")
+                "alg" (ecase algorithm
+                        (:plain "plain")
+                        (:hs256 "HS256")))
 
-    (let ((header-string (with-output-to-string (s)
-                           (yason:encode header s)))
-          (claims-string (with-output-to-string (s)
-                           (yason:encode claimset s)))
-          (secret (when algorithm 
+    (let ((header-string (base64
+                          (with-output-to-string (s)
+                            (yason:encode header s))))
+          (claims-string (base64
+                          (with-output-to-string (s)
+                            (yason:encode claimset s))))
+          (secret (unless (eq algorithm :plain)
                     (etypecase secret
                       ((simple-array (unsigned-byte 8))
                        secret)
                       (string
                        (string-to-octets secret
                                          :external-format :utf-8))))))
-      
-      (format nil "~A.~A.~@[~A~]"
-              (base64 header-string)
-              (base64 claims-string)
-              nil))))
 
+      (format nil "~A.~A.~@[~A~]"
+              header-string
+              claims-string
+              (when (eq algorithm :hs256)
+                (base64
+                 (hmac-digest
+                  (update-hmac (make-hmac secret 'SHA256)
+                               (concatenate '(vector (unsigned-byte 8))
+                                            (string-to-octets
+                                             header-string)
+                                            #(46)
+                                            (string-to-octets
+                                             claims-string))))))))))
