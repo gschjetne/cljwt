@@ -27,7 +27,8 @@
   (:import-from #:flexi-streams
                 #:string-to-octets
                 #:octets-to-string)
-  (:export #:issue))
+  (:export #:issue
+           #:to-unix-time))
 
 (in-package #:cljws)
 
@@ -49,6 +50,7 @@
   "Convert universal time to New Jersey time"
   (when time (- time (encode-universal-time 0 0 0 1 1 1970 0))))
 
+
 (defun base64 (input)
   "Takes a string, returns an unpadded URI-encoded Base64 string.
 Necessary because CL-BASE64 has no option to omit padding."
@@ -59,7 +61,6 @@ Necessary because CL-BASE64 has no option to omit padding."
            (string (string-to-base64-string input :uri t))
            ((simple-array (unsigned-byte 8))
             (usb8-array-to-base64-string input :uri t))))
-      
       (loop for character = (read-char in nil)
          while character do
            (unless (eq character #\.)
@@ -67,9 +68,11 @@ Necessary because CL-BASE64 has no option to omit padding."
 
 (defun issue (claims &key algorithm secret issuer subject audience
                        expiration not-before issued-at id more-header)
+  "Encodes and returns a JSON Web Token. Times are in universal-time,
+number of seconds from 1900-01-01 00:00:00"
   (bind-hash-tables ((claimset claims)
                      (header more-header))
-    
+    ;; Add registered claims to the claims hash table
     (add-claims claimset
                 "iss" issuer
                 "sub" subject
@@ -78,13 +81,13 @@ Necessary because CL-BASE64 has no option to omit padding."
                 "nbf" (to-unix-time not-before)
                 "iat" (to-unix-time issued-at)
                 "jti" id)
-
+    ;; Add type and algorithm to the header hash table
     (add-claims header
                 "typ" "JWT"
                 "alg" (ecase algorithm
                         (:plain "plain")
                         (:hs256 "HS256")))
-
+    ;; Prepare JSON and, if applicable, key
     (let ((header-string (base64
                           (with-output-to-string (s)
                             (yason:encode header s))))
@@ -98,7 +101,7 @@ Necessary because CL-BASE64 has no option to omit padding."
                       (string
                        (string-to-octets secret
                                          :external-format :utf-8))))))
-
+      ;; Assemble and, if applicable, sign the JWT
       (format nil "~A.~A.~@[~A~]"
               header-string
               claims-string
@@ -109,6 +112,6 @@ Necessary because CL-BASE64 has no option to omit padding."
                                (concatenate '(vector (unsigned-byte 8))
                                             (string-to-octets
                                              header-string)
-                                            #(46)
+                                            #(46) ; ASCII period (.)
                                             (string-to-octets
                                              claims-string))))))))))
