@@ -1,15 +1,19 @@
 * CLJWT
   A library for issuing and validating JSON Web Tokens
 
-  It is very incomplete at this point.
-
 ** Implemented so far
    - Issue unsecured tokens
-   - HMAC security
+   - Issue tokens secured with HS256
+   - Decode and verify tokens
 
 ** To do
-   - Parsing and validation
    - Additional algorithms
+   - Encrypted tokens
+   - Better abstractions
+   - Tests
+   - Documentation
+   - Release
+   - Add to Quicklisp
 
 ** License
    This program is free software: you can redistribute it and/or modify
