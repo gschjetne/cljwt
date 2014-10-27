@@ -31,7 +31,8 @@
                 #:hmac-digest)
   (:export #:issue
            #:decode
-           #:to-unix-time))
+           #:to-unix-time
+           #:from-unix-time))
 
 (in-package #:cljwt)
 
