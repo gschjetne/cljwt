@@ -16,13 +16,15 @@
 ;; License along with CLJWT.  If not, see
 ;; <http://www.gnu.org/licenses/>.
 
-(defpackage :cl-arango-system (:use :cl :asdf))
-(in-package :cl-arango-system)
+(in-package :cl-user)
+(defpackage :cljwt-system (:use :cl :asdf))
+(in-package :cljwt-system)
 
 (defsystem cljwt
   :name "CLJWT"
   :author "Grim Schjetne <grim@schjetne.se"
   :description "JSON Web Token library"
+  :license "LGPLv3+"
   :depends-on (:ironclad
                :yason
                :cl-base64
