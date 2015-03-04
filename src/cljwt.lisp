@@ -32,7 +32,13 @@
   (:export #:issue
            #:decode
            #:to-unix-time
-           #:from-unix-time))
+           #:from-unix-time
+           #:unsecured-token
+           #:invalid-hmac
+           #:unsupported-algorithm
+           #:invalid-time
+           #:expired
+           #:not-yet-valid))
 
 (in-package #:cljwt)
 
@@ -149,7 +155,7 @@ returns the digest, in Base64"
                        secret)))
     (unless (equalp computed-digest
                    reported-digest)
-      (error 'invalid-hmac
+      (cerror "Continue anyway" 'invalid-hmac
              :reported-digest reported-digest
              :computed-digest computed-digest))))
 
@@ -181,28 +187,23 @@ token claims and token header"
                           :external-format :utf-8)))
            (algorithm (gethash "alg" header-hash)))
       ;; Verify HMAC
-      (restart-case
-          (cond ((equal algorithm "HS256")
-                 (compare-HS256-digest header-string
-                                       claims-string
-                                       secret
-                                       digest-string))
-                ((or (null algorithm) (equal algorithm "none"))
-                 (when fail-if-unsecured
-                     (error 'unsecured-token)))
-                (t (error 'unsupported-algorithm
-                          :algorithm algorithm)))
-        (continue () nil))
+      (cond ((equal algorithm "HS256")
+             (compare-HS256-digest header-string
+                                   claims-string
+                                   secret
+                                   digest-string))
+            ((and (or (null algorithm) (equal algorithm "none")) fail-if-unsecured)
+             (cerror "Continue anyway" 'unsecured-token))
+            (t (cerror "Continue anyway" 'unsupported-algorithm
+                       :algorithm algorithm)))
       ;; Verify timestamps
-      (restart-case
-          (let ((expires (from-unix-time (gethash "exp" claims-hash)))
-                (not-before (from-unix-time (gethash "nbf" claims-hash)))
-                (current-time (get-universal-time)))
-            (when (and expires (> current-time expires))
-              (error 'expired :delta (- current-time expires)))
-            (when (and not-before (< current-time not-before))
-              (error 'not-yet-valid :delta (- current-time not-before))))
-        (continue () nil))
+      (let ((expires (from-unix-time (gethash "exp" claims-hash)))
+            (not-before (from-unix-time (gethash "nbf" claims-hash)))
+            (current-time (get-universal-time)))
+        (when (and expires (> current-time expires))
+          (cerror "Continue anyway" 'expired :delta (- current-time expires)))
+        (when (and not-before (< current-time not-before))
+          (cerror "Continue anyway" 'not-yet-valid :delta (- current-time not-before))))
       ;; Return hashes
       (values claims-hash header-hash))))
 
