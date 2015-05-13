@@ -66,29 +66,28 @@
   "Convert New Jersey time to universal time"
   (when time (+ time (encode-universal-time 0 0 0 1 1 1970 0))))
 
-
 (defun base64-encode (input)
-  "Takes a string, returns an unpadded URI-encoded Base64 string.
-Necessary because CL-BASE64 has no option to omit padding."
-  (with-output-to-string (out)
-    (with-input-from-string
-        (in
-         (etypecase input
-           (string (string-to-base64-string input :uri t))
-           ((simple-array (unsigned-byte 8))
-            (usb8-array-to-base64-string input :uri t))))
-      (loop for character = (read-char in nil)
-         while character do
-           (unless (eq character #\.)
-             (write-char character out))))))
+  "Takes a string or octets, returns an unpadded URI-encoded Base64 string."
+  (etypecase input
+    (string (base64-encode (string-to-octets input :external-format :utf-8)))
+    ((simple-array (unsigned-byte 8))
+     (with-output-to-string (out)
+       (with-input-from-string (in (usb8-array-to-base64-string input :uri t))
+         (loop for character = (read-char in nil)
+               while character do
+                 ;; CL-BASE64 always uses padding, which must be removed.
+                 (unless (eq character #\.)
+                   (write-char character out))))))))
 
 (defun base64-decode (base-64-string)
-  "Strings must be re-padded or CL-BASE64 gets confused."
+  "Takes a base64-uri string and return an array of octets"
   (base64-string-to-usb8-array
-   (with-output-to-string (s)
-     (write-string base-64-string s)
-     (loop repeat (rem (length base-64-string) 4) do
-          (write-char #\. s)))
+   ;; Re-pad the string, or CL-BASE64 will get confused
+   (concatenate 'string
+                base-64-string
+                (make-array (rem (length base-64-string) 4)
+                            :element-type 'character
+                            :initial-element #\.))
    :uri t))
 
 (defun issue (claims &key algorithm secret issuer subject audience
