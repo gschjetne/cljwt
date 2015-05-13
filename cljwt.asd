@@ -28,7 +28,8 @@
   :depends-on (:ironclad
                :yason
                :cl-base64
-               :flexi-streams)
+               :flexi-streams
+               :split-sequence)
   :components
   ((:module "src"
             :serial t

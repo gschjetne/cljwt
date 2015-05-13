@@ -29,6 +29,8 @@
                 #:make-hmac
                 #:update-hmac
                 #:hmac-digest)
+  (:import-from #:split-sequence
+                #:split-sequence)
   (:export #:issue
            #:decode
            #:to-unix-time
@@ -159,23 +161,12 @@ returns the digest, in Base64"
              :reported-digest reported-digest
              :computed-digest computed-digest))))
 
-(defun read-until-period (stream)
-  "Reads characters until a period (.) character is reached, returns
-characters as a string"
-  (with-output-to-string (out)
-    (loop for character = (read-char stream nil)
-       while (and character
-                  (not (eq character #\.))) do
-         (write-char character out))))
-
 (defun decode (jwt-string &key secret fail-if-unsecured)
   "Decodes and verifies a JSON Web Token. Returns two hash tables,
 token claims and token header"
-  (with-input-from-string (stream jwt-string)
-    (let* ((header-string (read-until-period stream))
-           (claims-string (read-until-period stream))
-           (digest-string (read-until-period stream))
-           (header-hash (yason:parse
+  (destructuring-bind (header-string claims-string digest-string)
+      (split-sequence #\. jwt-string)
+    (let* ((header-hash (yason:parse
                          (octets-to-string
                           (base64-decode
                            header-string)
