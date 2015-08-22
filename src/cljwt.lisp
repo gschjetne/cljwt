@@ -160,7 +160,7 @@ returns the digest, in Base64"
              :reported-digest reported-digest
              :computed-digest computed-digest))))
 
-(defun decode (jwt-string &key secret fail-if-unsecured)
+(defun decode (jwt-string &key secret fail-if-unsecured (fail-if-unsupported t))
   "Decodes and verifies a JSON Web Token. Returns two hash tables,
 token claims and token header"
   (destructuring-bind (header-string claims-string digest-string)
@@ -184,8 +184,8 @@ token claims and token header"
                                    digest-string))
             ((and (or (null algorithm) (equal algorithm "none")) fail-if-unsecured)
              (cerror "Continue anyway" 'unsecured-token))
-            (t (cerror "Continue anyway" 'unsupported-algorithm
-                       :algorithm algorithm)))
+            (fail-if-unsupported (cerror "Continue anyway" 'unsupported-algorithm
+                                         :algorithm algorithm)))
       ;; Verify timestamps
       (let ((expires (from-unix-time (gethash "exp" claims-hash)))
             (not-before (from-unix-time (gethash "nbf" claims-hash)))
