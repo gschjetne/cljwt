@@ -3,7 +3,7 @@
 
 ** Implemented so far
    - Issue unsecured tokens
-   - Issue tokens secured with HS256
+   - Issue tokens secured with HS256 and RS256
    - Decode and verify tokens
 
 ** To do
