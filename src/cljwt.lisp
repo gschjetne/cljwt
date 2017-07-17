@@ -33,7 +33,6 @@
   (:import-from #:split-sequence
                 #:split-sequence)
   (:export #:issue
-           #:decode
            #:to-unix-time
            #:from-unix-time
            #:unsecured-token
@@ -42,7 +41,12 @@
            #:unsupported-algorithm
            #:invalid-time
            #:expired
-           #:not-yet-valid))
+           #:not-yet-valid
+           #:unpack
+           #:verify-timestamps
+           #:verify
+           #:mismatched-algorithms
+           #:missing-algorithm))
 
 (in-package #:cljwt)
 
@@ -216,48 +220,70 @@ digest in Base64 to compare with. Signals an error if there is a mismatch."
                 :reported-digest reported-clear-digest
                 :computed-digest computed-clear-digest))))
 
-
-(defun decode (jwt-string &key key fail-if-unsecured (fail-if-unsupported t))
-  "Decodes and verifies a JSON Web Token. Returns two hash tables,
-token claims and token header"
-  (destructuring-bind (header-string claims-string digest-string)
+(defun unpack (jwt-string)
+  "Returns 5 values: claims and header as hash tables. digest, claims and header in string form."
+  (destructuring-bind (header claims digest)
       (split-sequence #\. jwt-string)
-    (let* ((header-hash (yason:parse
-                         (octets-to-string
-                          (base64-decode
-                           header-string)
-                          :external-format :utf-8)))
-           (claims-hash (yason:parse
-                         (octets-to-string
-                          (base64-decode
-                           claims-string)
-                          :external-format :utf-8)))
-           (algorithm (gethash "alg" header-hash)))
-      ;; Verify HMAC
-      (cond ((equal algorithm "HS256")
-             (compare-HS256-digest header-string
-                                   claims-string
-                                   key
-                                   digest-string))
-            ((equal algorithm "RS256")
-             (compare-RS256-digest header-string
-                                   claims-string
-                                   key
-                                   digest-string))
-            ((and (or (null algorithm) (equal algorithm "none")) fail-if-unsecured)
-             (cerror "Continue anyway" 'unsecured-token))
-            (fail-if-unsupported (cerror "Continue anyway" 'unsupported-algorithm
-                                         :algorithm algorithm)))
-      ;; Verify timestamps
-      (let ((expires (from-unix-time (gethash "exp" claims-hash)))
-            (not-before (from-unix-time (gethash "nbf" claims-hash)))
-            (current-time (get-universal-time)))
-        (when (and expires (> current-time expires))
-          (cerror "Continue anyway" 'expired :delta (- current-time expires)))
-        (when (and not-before (< current-time not-before))
-          (cerror "Continue anyway" 'not-yet-valid :delta (- current-time not-before))))
-      ;; Return hashes
-      (values claims-hash header-hash))))
+    (values
+     (yason:parse
+      (octets-to-string
+       (base64-decode
+        claims)
+       :external-format :utf-8))
+     (yason:parse
+      (octets-to-string
+       (base64-decode
+        header)
+       :external-format :utf-8))
+     digest claims header)))
+
+(defun verify-timestamps (claims)
+  "Call with the first value returned by the unpack function."
+  (let ((expires (from-unix-time (gethash "exp" claims)))
+        (not-before (from-unix-time (gethash "nbf" claims)))
+        (current-time (get-universal-time)))
+    (when (and expires (> current-time expires))
+      (cerror "Continue anyway" 'expired :delta (- current-time expires)))
+    (when (and not-before (< current-time not-before))
+      (cerror "Continue anyway" 'not-yet-valid :delta (- current-time not-before))))
+  t)
+
+;;According to
+;;https://auth0.com/blog/critical-vulnerabilities-in-json-web-token-libraries/
+;;the JWT should not be allowed to decide the algorithm that verifies it.
+
+
+(defun verify (jwt-string key algorithm
+               &key fail-if-unsecured (fail-if-unsupported t))
+  "Decodes and verifies a JSON Web Token. Returns two hash tables,
+token claims and token header. The key and algorithm specifier should both be
+supplied by the source of the token."
+  (multiple-value-bind (claims header digest claims-string header-string)
+      (unpack jwt-string)
+    (if algorithm
+        (unless (equal algorithm (gethash "alg" header))
+          (cerror "Continue anyway" 'mismatched-algorithms
+                  :specified-algorithm algorithm
+                  :token-field-algorithm (gethash "alg" header)))
+        (progn
+          (cerror "Continue with token-specified algorithm" 'missing-algorithm)
+          (setf algorithm (gethash "alg" header))))
+    (cond ((equal algorithm "HS256")
+           (compare-HS256-digest header-string
+                                 claims-string
+                                 key
+                                 digest))
+          ((equal algorithm "RS256")
+           (compare-RS256-digest header-string
+                                 claims-string
+                                 key
+                                 digest))
+          ((and (or (null algorithm) (equal algorithm "none")) fail-if-unsecured)
+           (cerror "Continue anyway" 'unsecured-token))
+          (fail-if-unsupported (cerror "Continue anyway" 'unsupported-algorithm
+                                       :algorithm algorithm)))
+    (verify-timestamps claims)
+    (values claims header)))
 
 ;;; Conditions
 
@@ -266,6 +292,10 @@ token claims and token header"
 (define-condition invalid-hmac (error) ())
 
 (define-condition invalid-rs256-signature (error) ())
+
+(define-condition mismatched-algorithms (error) ())
+
+(define-condition missing-algorithm (error) ())
 
 (define-condition unsupported-algorithm (error)
   ((algorithm :initarg :algorithm :reader algorithm))
