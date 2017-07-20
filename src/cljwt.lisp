@@ -28,21 +28,35 @@
   (:import-from #:ironclad
                 #:make-hmac
                 #:update-hmac
-                #:hmac-digest)
+                #:hmac-digest
+                #:encrypt-message)
   (:import-from #:split-sequence
                 #:split-sequence)
   (:export #:issue
-           #:decode
            #:to-unix-time
            #:from-unix-time
            #:unsecured-token
            #:invalid-hmac
+           #:invalid-rs256-signature
            #:unsupported-algorithm
            #:invalid-time
            #:expired
-           #:not-yet-valid))
+           #:not-yet-valid
+           #:unpack
+           #:verify-timestamps
+           #:verify
+           #:mismatched-algorithms
+           #:missing-algorithm))
 
 (in-package #:cljwt)
+
+(defconstant +sha256-prefix+ #(#x30 #x31 #x30 #x0d #x06 #x09 #x60 #x86 #x48 #x01 #x65 #x03 #x04 #x02 #x01 #x05 #x00 #x04 #x20))
+
+(defconstant +rs256-padding+ (concatenate '(vector (unsigned-byte 8))
+                                          #(#x00 #x01)
+                                          (make-array '(74) :element-type '(unsigned-byte 8) :initial-element #xff)
+                                          #(#x00)
+                                          +sha256-prefix+))
 
 (defmacro bind-hash-tables (bindings &body body)
   `(let ,(loop for binding in bindings collect
@@ -74,10 +88,10 @@
      (with-output-to-string (out)
        (with-input-from-string (in (usb8-array-to-base64-string input :uri t))
          (loop for character = (read-char in nil)
-               while character do
-                 ;; CL-BASE64 always uses padding, which must be removed.
-                 (unless (eq character #\.)
-                   (write-char character out))))))))
+            while character do
+            ;; CL-BASE64 always uses padding, which must be removed.
+              (unless (eq character #\.)
+                (write-char character out))))))))
 
 (defun base64-decode (base-64-string)
   "Takes a base64-uri string and return an array of octets"
@@ -90,7 +104,7 @@
                             :initial-element #\.))
    :uri t))
 
-(defun issue (claims &key algorithm secret issuer subject audience
+(defun issue (claims &key algorithm key issuer subject audience
                        expiration not-before issued-at id more-header)
   "Encodes and returns a JSON Web Token. Times are in universal-time,
 number of seconds from 1900-01-01 00:00:00"
@@ -110,7 +124,8 @@ number of seconds from 1900-01-01 00:00:00"
                 "typ" "JWT"
                 "alg" (ecase algorithm
                         (:none "none")
-                        (:hs256 "HS256")))
+                        (:hs256 "HS256")
+                        (:rs256 "RS256")))
     ;; Prepare JSON
     (let ((header-string (base64-encode
                           (with-output-to-string (s)
@@ -122,10 +137,14 @@ number of seconds from 1900-01-01 00:00:00"
       (format nil "~A.~A.~@[~A~]"
               header-string
               claims-string
-              (when (eq algorithm :hs256)
-                (HS256-digest header-string
-                              claims-string
-                              secret))))))
+              (ecase algorithm
+                (:none nil)
+                (:hs256 (HS256-digest header-string
+                                      claims-string
+                                      key))
+                (:rs256 (RS256-digest header-string
+                                      claims-string
+                                      key)))))))
 
 (defun HS256-digest (header-string claims-string secret)
   "Takes header and claims in Base64, secret as a string or octets,
@@ -147,6 +166,28 @@ returns the digest, in Base64"
                   (string-to-octets
                    claims-string))))))
 
+(defun RS256-clear-padded-digest (header-string claims-string)
+  "Takes header and claims in Base64 returns the non-crypted, padded digest, as octets"
+  (concatenate '(vector (unsigned-byte 8))
+               +rs256-padding+
+               (ironclad:digest-sequence
+                :sha256
+                (concatenate '(vector (unsigned-byte 8))
+                             (string-to-octets
+                              header-string)
+                             #(46)      ; ASCII period (.)
+                             (string-to-octets
+                              claims-string)))))
+
+
+(defun RS256-digest (header-string claims-string private-key)
+  "Takes header and claims in Base64, private-key as an ironclad rsa private-key,
+returns the digest, in Base64"
+  (base64-encode (encrypt-message
+                  private-key
+                  (RS256-clear-padded-digest header-string claims-string))))
+
+
 (defun compare-HS256-digest (header-string claims-string
                              secret reported-digest)
   "Takes header and claims in Base64, secret as a string or octets, and a digest in Base64 to compare with. Signals an error if there is a mismatch."
@@ -155,53 +196,106 @@ returns the digest, in Base64"
                        claims-string
                        secret)))
     (unless (equalp computed-digest
-                   reported-digest)
+                    reported-digest)
       (cerror "Continue anyway" 'invalid-hmac
-             :reported-digest reported-digest
-             :computed-digest computed-digest))))
+              :reported-digest reported-digest
+              :computed-digest computed-digest))))
 
-(defun decode (jwt-string &key secret fail-if-unsecured)
-  "Decodes and verifies a JSON Web Token. Returns two hash tables,
-token claims and token header"
-  (destructuring-bind (header-string claims-string digest-string)
+(defun compare-RS256-digest (header-string claims-string
+                             public-key reported-digest)
+  "Takes header and claims in Base64, public-key as an ironclad rsa private-key, and a
+digest in Base64 to compare with. Signals an error if there is a mismatch."
+  (let ((computed-clear-digest
+         (RS256-clear-padded-digest header-string
+                                    claims-string))
+        (reported-clear-digest
+         (encrypt-message
+          public-key
+          (base64-decode reported-digest))))
+    ;; compare from 1 in the computer-clear-digest, as the encryption procedure
+    ;; discards the first null byte
+    (if (mismatch computed-clear-digest
+                  reported-clear-digest :start1 1)
+        (cerror "Continue anyway" 'invalid-rs256-signature
+                :reported-digest reported-clear-digest
+                :computed-digest computed-clear-digest))))
+
+(defun unpack (jwt-string)
+  "Returns 5 values: claims and header as hash tables. digest, claims and header in string form."
+  (destructuring-bind (header claims digest)
       (split-sequence #\. jwt-string)
-    (let* ((header-hash (yason:parse
-                         (octets-to-string
-                          (base64-decode
-                           header-string)
-                          :external-format :utf-8)))
-           (claims-hash (yason:parse
-                         (octets-to-string
-                          (base64-decode
-                           claims-string)
-                          :external-format :utf-8)))
-           (algorithm (gethash "alg" header-hash)))
-      ;; Verify HMAC
-      (cond ((equal algorithm "HS256")
-             (compare-HS256-digest header-string
-                                   claims-string
-                                   secret
-                                   digest-string))
-            ((and (or (null algorithm) (equal algorithm "none")) fail-if-unsecured)
-             (cerror "Continue anyway" 'unsecured-token))
-            (t (cerror "Continue anyway" 'unsupported-algorithm
-                       :algorithm algorithm)))
-      ;; Verify timestamps
-      (let ((expires (from-unix-time (gethash "exp" claims-hash)))
-            (not-before (from-unix-time (gethash "nbf" claims-hash)))
-            (current-time (get-universal-time)))
-        (when (and expires (> current-time expires))
-          (cerror "Continue anyway" 'expired :delta (- current-time expires)))
-        (when (and not-before (< current-time not-before))
-          (cerror "Continue anyway" 'not-yet-valid :delta (- current-time not-before))))
-      ;; Return hashes
-      (values claims-hash header-hash))))
+    (values
+     (yason:parse
+      (octets-to-string
+       (base64-decode
+        claims)
+       :external-format :utf-8))
+     (yason:parse
+      (octets-to-string
+       (base64-decode
+        header)
+       :external-format :utf-8))
+     digest claims header)))
+
+(defun verify-timestamps (claims)
+  "Call with the first value returned by the unpack function."
+  (let ((expires (from-unix-time (gethash "exp" claims)))
+        (not-before (from-unix-time (gethash "nbf" claims)))
+        (current-time (get-universal-time)))
+    (when (and expires (> current-time expires))
+      (cerror "Continue anyway" 'expired :delta (- current-time expires)))
+    (when (and not-before (< current-time not-before))
+      (cerror "Continue anyway" 'not-yet-valid :delta (- current-time not-before))))
+  t)
+
+;;According to
+;;https://auth0.com/blog/critical-vulnerabilities-in-json-web-token-libraries/
+;;the JWT should not be allowed to decide the algorithm that verifies it.
+
+
+(defun verify (jwt-string key algorithm
+               &key fail-if-unsecured (fail-if-unsupported t))
+  "Decodes and verifies a JSON Web Token. Returns two hash tables,
+token claims and token header. The key and algorithm specifier should both be
+supplied by the source of the token."
+  (multiple-value-bind (claims header digest claims-string header-string)
+      (unpack jwt-string)
+    (if algorithm
+        (unless (equal algorithm (gethash "alg" header))
+          (cerror "Continue anyway" 'mismatched-algorithms
+                  :specified-algorithm algorithm
+                  :token-field-algorithm (gethash "alg" header)))
+        (progn
+          (cerror "Continue with token-specified algorithm" 'missing-algorithm)
+          (setf algorithm (gethash "alg" header))))
+    (cond ((equal algorithm "HS256")
+           (compare-HS256-digest header-string
+                                 claims-string
+                                 key
+                                 digest))
+          ((equal algorithm "RS256")
+           (compare-RS256-digest header-string
+                                 claims-string
+                                 key
+                                 digest))
+          ((and (or (null algorithm) (equal algorithm "none")) fail-if-unsecured)
+           (cerror "Continue anyway" 'unsecured-token))
+          (fail-if-unsupported (cerror "Continue anyway" 'unsupported-algorithm
+                                       :algorithm algorithm)))
+    (verify-timestamps claims)
+    (values claims header)))
 
 ;;; Conditions
 
 (define-condition unsecured-token (error) ())
 
 (define-condition invalid-hmac (error) ())
+
+(define-condition invalid-rs256-signature (error) ())
+
+(define-condition mismatched-algorithms (error) ())
+
+(define-condition missing-algorithm (error) ())
 
 (define-condition unsupported-algorithm (error)
   ((algorithm :initarg :algorithm :reader algorithm))
