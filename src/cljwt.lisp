@@ -110,7 +110,8 @@ number of seconds from 1900-01-01 00:00:00"
                 "typ" "JWT"
                 "alg" (ecase algorithm
                         (:none "none")
-                        (:hs256 "HS256")))
+                        (:hs256 "HS256")
+                        (:hs512 "HS512")))
     ;; Prepare JSON
     (let ((header-string (base64-encode
                           (with-output-to-string (s)
@@ -122,12 +123,14 @@ number of seconds from 1900-01-01 00:00:00"
       (format nil "~A.~A.~@[~A~]"
               header-string
               claims-string
-              (when (eq algorithm :hs256)
-                (HS256-digest header-string
-                              claims-string
-                              secret))))))
+              (case algorithm
+                ((:hs256 :hs512)
+                 (hs-digest algorithm
+                            header-string
+                            claims-string
+                            secret)))))))
 
-(defun HS256-digest (header-string claims-string secret)
+(defun hs-digest (algorithm header-string claims-string secret)
   "Takes header and claims in Base64, secret as a string or octets,
 returns the digest, in Base64"
   (base64-encode
@@ -139,7 +142,9 @@ returns the digest, in Base64"
                   (string
                    (string-to-octets secret
                                      :external-format :utf-8)))
-                'ironclad:SHA256)
+                (ecase algorithm
+                  (:hs256 'ironclad:SHA256)
+                  (:hs512 'ironclad:SHA512)))
      (concatenate '(vector (unsigned-byte 8))
                   (string-to-octets
                    header-string)
@@ -147,15 +152,16 @@ returns the digest, in Base64"
                   (string-to-octets
                    claims-string))))))
 
-(defun compare-HS256-digest (header-string claims-string
-                             secret reported-digest)
+(defun compare-HS-digest (algorithm header-string claims-string
+                          secret reported-digest)
   "Takes header and claims in Base64, secret as a string or octets, and a digest in Base64 to compare with. Signals an error if there is a mismatch."
   (let ((computed-digest
-         (HS256-digest header-string
-                       claims-string
-                       secret)))
+          (HS-digest algorithm
+                     header-string
+                     claims-string
+                     secret)))
     (unless (equalp computed-digest
-                   reported-digest)
+                    reported-digest)
       (cerror "Continue anyway" 'invalid-hmac
              :reported-digest reported-digest
              :computed-digest computed-digest))))
@@ -178,10 +184,17 @@ token claims and token header"
            (algorithm (gethash "alg" header-hash)))
       ;; Verify HMAC
       (cond ((equal algorithm "HS256")
-             (compare-HS256-digest header-string
-                                   claims-string
-                                   secret
-                                   digest-string))
+             (compare-HS-digest :hs256
+                                header-string
+                                claims-string
+                                secret
+                                digest-string))
+            ((equal algorithm "HS512")
+             (compare-HS-digest :hs512
+                                header-string
+                                claims-string
+                                secret
+                                digest-string))
             ((and (or (null algorithm) (equal algorithm "none")) fail-if-unsecured)
              (cerror "Continue anyway" 'unsecured-token))
             (t (cerror "Continue anyway" 'unsupported-algorithm
@@ -201,12 +214,18 @@ token claims and token header"
 
 (define-condition unsecured-token (error) ())
 
-(define-condition invalid-hmac (error) ())
+(define-condition invalid-hmac (error)
+  ((reported-digest :initarg :reported-digest :reader reported-digest)
+   (computed-digest :initarg :computed-digest :reader computed-digest))
+  (:report (lambda (condition stream)
+             (format stream "Invalid HMAC, \"~A\" reported, but computed \"~A\"."
+                     (reported-digest condition)
+                     (computed-digest condition)))))
 
 (define-condition unsupported-algorithm (error)
   ((algorithm :initarg :algorithm :reader algorithm))
   (:report (lambda (condition stream)
-             (format stream "Algorithm \"~A\" not supported"
+             (format stream "Algorithm \"~A\" not supported."
                      (algorithm condition)))))
 
 (define-condition invalid-time (error)
