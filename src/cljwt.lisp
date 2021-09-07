@@ -85,9 +85,12 @@
    ;; Re-pad the string, or CL-BASE64 will get confused
    (concatenate 'string
                 base-64-string
-                (make-array (rem (length base-64-string) 4)
-                            :element-type 'character
-                            :initial-element #\.))
+		(case (rem (length base-64-string)
+			   4)
+		  (0 "")
+		  (1 "...")
+		  (2 "..")
+		  (3 ".")))
    :uri t))
 
 (defun issue (claims &key algorithm secret issuer subject audience
